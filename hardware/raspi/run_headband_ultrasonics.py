@@ -213,7 +213,7 @@ def run(args):
                 tilt_active = (raw == GPIO.HIGH) if args.tilt_active_high else (raw == GPIO.LOW)
 
                 # When tilt is active, level -> 0.0; when not, level -> 1.0
-                target_level = 0.0 if tilt_active else 1.0
+                target_level = 1.0 if tilt_active else 0.0
 
                 # Exponential smoothing on tilt_level
                 alpha = 1.0 if args.tilt_window <= 0 else 1.0 - math.exp(-dt / args.tilt_window)
