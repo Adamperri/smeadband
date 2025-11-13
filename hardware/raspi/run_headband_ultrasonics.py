@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-smeadband — Headband runtime (BCM mode, pins <= 27)
+smeadband — Headband runtime (BCM mode, pins <= 27):
 
 Hardware:
   - Two ultrasonic sensors (front & back)
@@ -9,19 +9,21 @@ Hardware:
   - Two vibration motors:
       Vib1 (front feedback) = GPIO12  (default)
       Vib2 (back feedback)  = GPIO16  (default)
-  - One tilt switch (SunFounder Tilt-Switch V1.0 or similar):
-      SIG pin (default GPIO6, can override with --tilt-pin)
+  - One tilt switch (SunFounder Tilt-Switch V1.0):
+      SIG pin (e.g., GPIO5)
   - One buzzer (for tilt only):
-      Buzzer = GPIO13 (default, can override with --buzzer-pin)
+      Buzzer = GPIO13 (default)
 
 Behavior:
   - Vibrators:
       * OFF if no obstacle or object beyond warn distance
-      * PULSED faster as object goes from warn -> close
+      * PULSED faster as object approaches from warn -> close
       * CONTINUOUS when very close (<= close distance)
-  - Tilt buzzer (single buzzer):
-      * No buzzing for tilt_severity in [0.0, 0.2)
-      * Pulsed beeps, increasing in frequency as tilt_severity goes from 0.2 -> 1.0
+  - Tilt buzzer:
+      * Internally: tilt_level in [0,1], where 1.0 = baseline (no tilt), 0.0 = max tilt
+      * We use tilt_intensity = 1 - tilt_level
+      * No buzzing for tilt_intensity in [0.0, threshold)
+      * Pulsed beeps, increasing in frequency as tilt_intensity goes from threshold -> 1.0
 """
 
 import argparse
@@ -39,17 +41,12 @@ DEFAULT_BACK_ECHO  = 23
 DEFAULT_VIB1_PIN   = 12
 DEFAULT_VIB2_PIN   = 16
 
-# Try a different default tilt pin than before
-DEFAULT_TILT_PIN       = 6   # Tilt SIG (try this new pin)
+DEFAULT_TILT_PIN       = 5   # Tilt SIG
 DEFAULT_TILT_BUZZERPIN = 13  # Single buzzer used ONLY for tilt
 
 
 def map_interval(distance_cm, close_cm, warn_cm, min_interval_s=0.08, max_interval_s=0.60):
-    """
-    Map distance in [close,warn] -> OFF interval in [min,max].
-
-    Closer => smaller OFF interval => faster pulsing.
-    """
+    """Map distance in [close,warn] -> OFF interval in [min,max]; closer => faster."""
     x = max(min(distance_cm, warn_cm), close_cm)
     if warn_cm == close_cm:
         return min_interval_s
@@ -91,6 +88,9 @@ class BeepScheduler:
         self.next_toggle = 0.0
 
     def pulse_tick(self, interval: float, tnow: float):
+        """
+        Call this every loop iteration with the desired OFF interval.
+        """
         if self.mode != "pulse":
             self.mode = "pulse"
             self.buzzer.on()
@@ -119,10 +119,9 @@ def run(args):
     front = UltrasonicSensor(SensorPins(args.front_trig, args.front_echo, "front")) if args.mode in ("front", "dual") else None
     back  = UltrasonicSensor(SensorPins(args.back_trig,  args.back_echo,  "back"))  if args.mode in ("back", "dual")  else None
 
-    # Vibrators
-    # REVERSED LOGIC: assume ACTIVE-HIGH modules by default (active_low=False).
-    vib1 = Buzzer(args.vib_1_pin, active_low=False)
-    vib2 = Buzzer(args.vib_2_pin, active_low=False)
+    # Vibrators (active-LOW modules by default; "vib-active-high" flips logic)
+    vib1 = Buzzer(args.vib_1_pin, active_low=not args.vib_active_high)
+    vib2 = Buzzer(args.vib_2_pin, active_low=not args.vib_active_high)
     vib1.off()
     vib2.off()
     vib1_sched = BeepScheduler(vib1, args.vib_pulse_len)
@@ -131,11 +130,11 @@ def run(args):
     # Tilt + single buzzer
     tilt_enabled = args.tilt_pin >= 0
     if tilt_enabled:
-        # Assume typical tilt module: switch to GND when tilted => active-LOW, use PUD_UP
-        GPIO.setup(args.tilt_pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+        pull = GPIO.PUD_DOWN if args.tilt_active_high else GPIO.PUD_UP
+        GPIO.setup(args.tilt_pin, GPIO.IN, pull_up_down=pull)
 
-        # REVERSED LOGIC: assume ACTIVE-HIGH buzzer (active_low=False).
-        tilt_buzzer = Buzzer(args.buzzer_pin, active_low=False)
+        # buzzer is active-LOW by default (your actual wiring)
+        tilt_buzzer = Buzzer(args.buzzer_pin, active_low=not args.buzzer_active_high)
         tilt_buzzer.off()
         tilt_sched = BeepScheduler(tilt_buzzer, args.tilt_beep_len)
     else:
@@ -145,16 +144,18 @@ def run(args):
 
     print(f"[smeadband] Mode={args.mode}  warn<= {args.warn_in} in  close<= {args.close_in} in")
     print(f"[smeadband] Ultrasonic pins (BCM): front(T{args.front_trig}/E{args.front_echo})  back(T{args.back_trig}/E{args.back_echo})")
-    print(f"[smeadband] Vibrators: V1={args.vib_1_pin} V2={args.vib_2_pin} (assumed ACTIVE-HIGH)")
+    print(f"[smeadband] Vibrators: V1={args.vib_1_pin} V2={args.vib_2_pin} active-{'HIGH' if args.vib_active_high else 'LOW'}")
     if tilt_enabled:
-        print(f"[smeadband] Tilt: pin={args.tilt_pin} (assumed active-LOW switch to GND)")
-        print(f"[smeadband] Buzzer (tilt only): pin={args.buzzer_pin} (assumed ACTIVE-HIGH)")
+        print(f"[smeadband] Tilt: pin={args.tilt_pin} active-{'HIGH' if args.tilt_active_high else 'LOW'}")
+        print(f"[smeadband] Buzzer (tilt only): pin={args.buzzer_pin} active-{'HIGH' if args.buzzer_active_high else 'LOW'}")
     else:
         print("[smeadband] Tilt disabled (no tilt pin provided).")
     print("[smeadband] Ctrl+C to exit.")
 
     t_prev = time.monotonic()
-    tilt_severity = 0.0
+
+    # NEW: tilt_level starts at baseline 1.0 (no tilt)
+    tilt_level = 1.0  # 1.0 = baseline, 0.0 = maximum tilt
 
     try:
         vib1_sched.set_off()
@@ -172,16 +173,14 @@ def run(args):
             dist_cm  = choose_distance(args.mode, front_cm, back_cm)
 
             # -------------------------
-            # VIBRATOR LOGIC (REVERSED to match your hardware)
+            # VIBRATOR LOGIC
             # -------------------------
             # Vib1 = front
             if front_cm is None or front_cm > warn_cm:
                 vib1_sched.set_off()
             elif front_cm <= close_cm:
-                # Very close: continuous vibration
                 vib1_sched.continuous()
             else:
-                # Mid-range: faster pulsing as we move from warn -> close
                 interval = map_interval(front_cm, close_cm, warn_cm,
                                         args.vib_min_interval, args.vib_max_interval)
                 vib1_sched.pulse_tick(interval, t_now)
@@ -198,22 +197,36 @@ def run(args):
 
             # -------------------------
             # TILT BUZZER LOGIC (single buzzer)
-            #   - tilt_severity ∈ [0,1]
-            #   - silent for severity in [0, tilt_threshold)
-            #   - pulsed with rising frequency from threshold -> 1
+            #
+            #   We maintain tilt_level ∈ [0,1]:
+            #       1.0 ≈ baseline / no tilt
+            #       0.0 ≈ fully tilted
+            #
+            #   We derive tilt_intensity = 1 - tilt_level:
+            #       0   = baseline
+            #       1   = max tilt
+            #
+            #   No sound for tilt_intensity in [0, threshold),
+            #   then increasing frequency as tilt_intensity -> 1.0
             # -------------------------
             if tilt_enabled:
                 raw = GPIO.input(args.tilt_pin)
-                # With PUD_UP, idle = HIGH; tilted (closed to GND) = LOW
-                tilt_active = (raw == GPIO.LOW)
+                tilt_active = (raw == GPIO.HIGH) if args.tilt_active_high else (raw == GPIO.LOW)
 
-                # Exponential smoothing of tilt state
+                # For reversed semantics:
+                #   tilt_active  => level wants to go to 0.0
+                #   not active   => level wants to go to 1.0
+                target_level = 0.0 if tilt_active else 1.0
+
+                # Exponential smoothing on tilt_level
                 alpha = 1.0 if args.tilt_window <= 0 else 1.0 - math.exp(-dt / args.tilt_window)
-                target = 1.0 if tilt_active else 0.0
-                tilt_severity += (target - tilt_severity) * alpha
+                tilt_level += (target_level - tilt_level) * alpha
 
-                if tilt_severity >= args.tilt_threshold:
-                    s = max(min(tilt_severity, 1.0), args.tilt_threshold)
+                # Convert level [0,1] to intensity [0,1] = 1 - level
+                tilt_intensity = 1.0 - tilt_level
+
+                if tilt_intensity >= args.tilt_threshold:
+                    s = max(min(tilt_intensity, 1.0), args.tilt_threshold)
                     frac = (s - args.tilt_threshold) / (1.0 - args.tilt_threshold)  # 0 at threshold, 1 at max
                     interval_tilt = args.tilt_min_interval + (1.0 - frac) * (args.tilt_max_interval - args.tilt_min_interval)
                     tilt_sched.pulse_tick(interval_tilt, t_now)
@@ -225,7 +238,10 @@ def run(args):
                 bs = f"{back_cm:6.1f}"  if back_cm  is not None else "  None"
                 cs = f"{dist_cm:6.1f}"  if dist_cm  is not None else "  None"
                 if tilt_enabled:
-                    print(f"front={fs} cm  back={bs} cm  chosen={cs} cm  tilt_sev={tilt_severity:0.2f}")
+                    print(
+                        f"front={fs} cm  back={bs} cm  chosen={cs} cm  "
+                        f"tilt_level={tilt_level:0.2f}  tilt_intensity={tilt_intensity:0.2f}"
+                    )
                 else:
                     print(f"front={fs} cm  back={bs} cm  chosen={cs} cm")
 
@@ -260,9 +276,11 @@ def build_parser():
     p.add_argument("--back-trig",  type=int, default=DEFAULT_BACK_TRIG)
     p.add_argument("--back-echo",  type=int, default=DEFAULT_BACK_ECHO)
 
-    # Vibrator motors (logic reversed to ACTIVE-HIGH by default)
+    # Vibrator motors
     p.add_argument("--vib-1-pin", type=int, default=DEFAULT_VIB1_PIN)
     p.add_argument("--vib-2-pin", type=int, default=DEFAULT_VIB2_PIN)
+    p.add_argument("--vib-active-high", action="store_true",
+                   help="If set, vibrators are driven active-HIGH. Default assumes active-LOW modules.")
     p.add_argument("--vib-pulse-len", type=float, default=0.06,
                    help="On-time (seconds) for each vibration pulse.")
     p.add_argument("--vib-min-interval", type=float, default=0.08,
@@ -272,9 +290,14 @@ def build_parser():
 
     # Tilt + single buzzer
     p.add_argument("--tilt-pin", type=int, default=DEFAULT_TILT_PIN,
-                   help="BCM pin for tilt SIG (default: 6). <0 disables tilt.")
+                   help="BCM pin for tilt SIG (e.g., 5). <0 disables tilt (default).")
+    p.add_argument("--tilt-active-high", action="store_true",
+                   help="If set, tilt switch is active-HIGH; default assumes active-LOW (SIG pulled low when tilted).")
+
     p.add_argument("--buzzer-pin", type=int, default=DEFAULT_TILT_BUZZERPIN,
-                   help="Single buzzer pin used only for tilt feedback (default: 13).")
+                   help="Single buzzer pin used only for tilt feedback.")
+    p.add_argument("--buzzer-active-high", action="store_true",
+                   help="If set, buzzer is active-HIGH; default assumes active-LOW modules (your case).")
 
     p.add_argument("--tilt-beep-len", type=float, default=0.06,
                    help="On-time (seconds) for each tilt beep.")
@@ -283,13 +306,13 @@ def build_parser():
     p.add_argument("--tilt-max-interval", type=float, default=0.80,
                    help="Maximum off-interval between tilt beeps just above threshold.")
     p.add_argument("--tilt-window", type=float, default=0.8,
-                   help="Smoothing window (seconds) for tilt severity (bigger = slower response).")
+                   help="Smoothing window (seconds) for tilt level (bigger = slower response).")
     p.add_argument("--tilt-threshold", type=float, default=0.20,
-                   help="Tilt severity threshold in [0,1]. 0–threshold: silent. Above: beeping with rising frequency.")
+                   help="Tilt *intensity* threshold in [0,1]. 0–threshold: silent. Above: beeping with rising frequency.")
 
     # Debug
     p.add_argument("--print", action="store_true",
-                   help="Print sensor distances and tilt severity each cycle.")
+                   help="Print sensor distances and tilt info each cycle.")
 
     return p
 
