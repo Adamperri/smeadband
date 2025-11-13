@@ -120,8 +120,8 @@ def run(args):
     back  = UltrasonicSensor(SensorPins(args.back_trig,  args.back_echo,  "back"))  if args.mode in ("back", "dual")  else None
 
     # Vibrators — HARD-CODED ACTIVE-LOW
-    vib1 = Buzzer(args.vib_1_pin, active_low=True)
-    vib2 = Buzzer(args.vib_2_pin, active_low=True)
+    vib1 = Buzzer(args.vib_1_pin, active_low=False)
+    vib2 = Buzzer(args.vib_2_pin, active_low=False)
     vib1.off()
     vib2.off()
     vib1_sched = BeepScheduler(vib1, args.vib_pulse_len)
