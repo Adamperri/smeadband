@@ -1,0 +1,13 @@
+﻿[Unit]
+Description=Smeadband Headband Runtime
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/smeadband/hardware/raspi
+ExecStart=/usr/bin/python3 run_headband_ultrasonics.py --mode dual --tilt-pin 4
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
